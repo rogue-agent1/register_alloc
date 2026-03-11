@@ -1,34 +1,46 @@
 #!/usr/bin/env python3
-"""Graph coloring register allocator."""
+"""Register Allocator — graph coloring with simplify/spill (Chaitin-Briggs)."""
 import sys
-def build_interference(live_ranges):
-    graph={v:set() for v in live_ranges}
-    vars=list(live_ranges.keys())
-    for i in range(len(vars)):
-        for j in range(i+1,len(vars)):
-            a,b=vars[i],vars[j]
-            s1,e1=live_ranges[a]; s2,e2=live_ranges[b]
-            if not(e1<s2 or e2<s1): graph[a].add(b); graph[b].add(a)
-    return graph
-def color_graph(graph,num_regs):
-    order=[]; g={v:set(ns) for v,ns in graph.items()}
-    while g:
-        v=min(g,key=lambda v:len(g[v])); order.append(v)
-        for n in g[v]: g[n].discard(v)
-        del g[v]
-    colors={}
-    for v in reversed(order):
-        used={colors[n] for n in graph[v] if n in colors}
-        for c in range(num_regs):
-            if c not in used: colors[v]=c; break
-        else: colors[v]=-1  # spill
+from collections import defaultdict
+
+class InterferenceGraph:
+    def __init__(self):
+        self.adj = defaultdict(set); self.nodes = set()
+    def add_node(self, n): self.nodes.add(n)
+    def add_edge(self, u, v):
+        if u != v: self.adj[u].add(v); self.adj[v].add(u); self.nodes.update([u,v])
+    def degree(self, n): return len(self.adj[n])
+    def remove(self, n):
+        for nb in self.adj[n]: self.adj[nb].discard(n)
+        del self.adj[n]; self.nodes.discard(n)
+
+def allocate_registers(ig, k):
+    adj_backup = {n: set(ig.adj[n]) for n in ig.nodes}
+    nodes = set(ig.nodes); stack = []; spilled = set()
+    # Simplify
+    while nodes:
+        found = None
+        for n in nodes:
+            if len(ig.adj[n] & nodes) < k: found = n; break
+        if found is None:
+            # Spill: pick highest degree
+            found = max(nodes, key=lambda n: len(ig.adj[n] & nodes))
+            spilled.add(found)
+        stack.append(found); nodes.remove(found)
+    # Color
+    colors = {}
+    for n in reversed(stack):
+        used = {colors[nb] for nb in adj_backup[n] if nb in colors}
+        for c in range(k):
+            if c not in used: colors[n] = c; break
+        else: colors[n] = 'SPILL'
     return colors
-live_ranges={'a':(0,5),'b':(1,3),'c':(2,6),'d':(4,7),'e':(5,8),'f':(7,9)}
-graph=build_interference(live_ranges)
-regs=['R0','R1','R2']
-colors=color_graph(graph,len(regs))
-print("Register allocation (3 registers):")
-for v in sorted(colors):
-    r=regs[colors[v]] if colors[v]>=0 else 'SPILL'
-    print(f"  {v} [{live_ranges[v][0]}-{live_ranges[v][1]}] → {r}")
-print(f"\nInterference edges: {sum(len(v) for v in graph.values())//2}")
+
+if __name__ == "__main__":
+    ig = InterferenceGraph()
+    for v in 'abcdef': ig.add_node(v)
+    for u, v in [('a','b'),('a','c'),('b','c'),('b','d'),('c','d'),('d','e'),('e','f')]:
+        ig.add_edge(u, v)
+    colors = allocate_registers(ig, 3)
+    print(f"3 registers: {colors}")
+    colors4 = allocate_registers(InterferenceGraph(), 4)
